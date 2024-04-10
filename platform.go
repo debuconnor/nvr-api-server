@@ -1,6 +1,11 @@
 package roomapi
 
 import (
+	"context"
+	"time"
+
+	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/chromedp"
 	"github.com/debuconnor/dbcore"
 	"github.com/valyala/fasthttp"
 )
@@ -10,6 +15,8 @@ func NewPlatform(platform Platform) Website {
 }
 
 func (platform *Platform) Get() {
+	defer Recover()
+
 	if platform.Code != "" && platform.Admin != nil {
 		dml := dbcore.NewDml()
 		dml.SelectColumn(convertTableColumn(SCHEMA_PLATFORM, COLUMN_NAME))
@@ -49,6 +56,9 @@ func (platform *Platform) Get() {
 }
 
 func (platform *Platform) Save() {
+	defer Recover()
+	Log("Saving platform session: ", platform.Code, ", Admin: ", platform.Admin.(*Admin).Id)
+
 	dml := dbcore.NewDml()
 	dml.Delete()
 	dml.From(SCHEMA_SESSION)
@@ -56,12 +66,17 @@ func (platform *Platform) Save() {
 	dml.Where(dbcore.AND, COLUMN_ADMIN_ID, dbcore.EQUAL, itoa(platform.Admin.(*Admin).Id))
 	dml.Execute(db.GetDb())
 
+	session, err := encrypt(encodeJson(convertToInterfaceMap(platform.Session)), SECRET_SALT, SECRET_KEY)
+	if err != nil {
+		Error(err)
+	}
+
 	dml.Clear()
 	dml.Insert()
 	dml.Into(SCHEMA_SESSION)
 	dml.Value(COLUMN_PLATFORM_CODE, platform.Code)
 	dml.Value(COLUMN_ADMIN_ID, itoa(platform.Admin.(*Admin).Id))
-	dml.Value(COLUMN_SESSION, encodeJson(convertToInterfaceMap(platform.Session)))
+	dml.Value(COLUMN_SESSION, session)
 	dml.Execute(db.GetDb())
 }
 
@@ -74,57 +89,99 @@ func (platform *Platform) Parse(string) {}
 func (platform *Platform) Scrape() {}
 
 func (platform *Platform) Retrieve() {
-	sessionReq := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(sessionReq)
-	reqBody := JSON_RETRIEVE_SESSION_PREFIX + platform.Admin.(*Admin).UserId + JSON_RETRIEVE_SESSION_MIDDLE + platform.Admin.(*Admin).Password + JSON_RETRIEVE_SESSION_SUFFIX
-	sessionReq.Header.SetMethod(HEADER_METHOD_POST)
-	sessionReq.Header.Set(HEADER_CONTENT_TYPE, "application/json; charset=utf-8")
-	sessionReq.Header.Set(HEADER_CONTENT_LENGTH, itoa(len(reqBody)))
-	sessionReq.SetBody([]byte(reqBody))
+	defer Recover()
 
-	sessionResp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(sessionResp)
-	sessionReq.SetRequestURI(URI_RETRIEVE_SESSION)
+	const isHeadless = true
+	const disableExtensions = true
+	const enableAutomation = false
+	const timeout = 10 * time.Second
+	const sleepTime = 500 * time.Millisecond
 
-	err := fasthttp.Do(sessionReq, sessionResp)
-	if err != nil {
-		Error(err)
+	var cookies []*network.Cookie
+	var sessionCookies map[string]string
+
+	options := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.DisableGPU,
+		chromedp.Flag(`headless`, isHeadless),
+		chromedp.Flag(`disable-extensions`, disableExtensions),
+		chromedp.Flag(`enable-automation`, enableAutomation),
+	)
+
+	ctx, cancel := chromedp.NewExecAllocator(context.Background(), options...)
+	defer cancel()
+	ctx, cancel = chromedp.NewContext(ctx)
+	defer cancel()
+	ctx, cancel = context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	for retry := 0; retry < 3; retry++ {
+		err := chromedp.Run(ctx,
+			chromedp.Navigate(URI_RETRIEVE_SESSION),
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				return chromedp.SetValue(SELECTOR_ID_BOX, platform.Admin.(*Admin).UserId, chromedp.NodeVisible).Do(ctx)
+			}),
+			chromedp.Sleep(sleepTime/2),
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				return chromedp.SetValue(SELECTOR_PW_BOX, platform.Admin.(*Admin).Password, chromedp.NodeVisible).Do(ctx)
+			}),
+			chromedp.Sleep(sleepTime/2),
+			chromedp.Click(SELECTOR_KEEP_LOGIN_BUTTON, chromedp.NodeVisible),
+			chromedp.Click(SELECTOR_LOGIN_BUTTON, chromedp.NodeVisible),
+			chromedp.Sleep(sleepTime),
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				cookies, _ = network.GetCookies().Do(ctx)
+				sessionCookies = make(map[string]string)
+				for _, cookie := range cookies {
+					if cookie.Name == SESSION_KEY_AUTH || cookie.Name == SESSION_KEY {
+						sessionCookies[cookie.Name] = cookie.Value
+					}
+				}
+				return nil
+			}),
+			chromedp.Sleep(sleepTime/2),
+			chromedp.Click(SELECTOR_REGISTER_KEEPING_BUTTON, chromedp.NodeVisible),
+		)
+
+		if err == nil {
+			break
+		} else if err != nil && retry == 2 {
+			Log(err)
+		}
 	}
 
-	if sessionResp.StatusCode() == fasthttp.StatusOK {
-		userData := decodeJson(string(sessionResp.Body()))
-		session := userData[PLATFORM_COLUMN_USER].(map[string]interface{})[PLATFORM_COLUMN_ACCESS_TOKEN].(string)
-		platform.Session = map[string]string{PLATFORM_COLUMN_ACCESS_TOKEN: session}
-	}
+	platform.Session = sessionCookies
 
 	placeReq := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(placeReq)
 
 	placeReq.Header.SetMethod(HEADER_METHOD_GET)
-	placeReq.Header.Set(HEADER_AUTHORIZATION, platform.Session[PLATFORM_COLUMN_ACCESS_TOKEN])
+	placeReq.Header.Set(HEADER_AUTHORIZATION, sessionToHeader(platform.Session))
+	placeReq.Header.Set(HEADER_PLATFORM_ID, platform.Admin.(*Admin).UserId)
 
 	placeResp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(placeResp)
 	placeReq.SetRequestURI(URI_RETRIEVE_PLACE)
 
-	err = fasthttp.Do(placeReq, placeResp)
+	err := fasthttp.Do(placeReq, placeResp)
 	if err != nil {
 		Error(err)
 	}
 
 	if placeResp.StatusCode() == fasthttp.StatusOK {
-		placeData := decodeJson(string(placeResp.Body()))
-		for _, place := range placeData[PLATFORM_COLUMN_PLACE].([]interface{}) {
-			placeMap := place.(map[string]interface{})
+		placeData := decodeJsonArray(string(placeResp.Body()))
+		for _, places := range placeData {
+			for _, place := range places[PLATFORM_COLUMN_PLACE].([]interface{}) {
+				placeMap := place.(map[string]interface{})
 
-			place := Place{
-				Id:       int(placeMap[COLUMN_ID].(float64)),
-				Admin:    platform.Admin,
-				Platform: platform,
-				Name:     placeMap[COLUMN_NAME].(string),
-				Url:      URI_RETRIEVE_ROOM_PREFIX + itoa(int(placeMap[COLUMN_ID].(float64))) + URI_RETRIEVE_ROOM_SUFFIX,
+				place := Place{
+					Id:       int(placeMap[PLATFORM_COLUMN_PLACE_ID].(float64)),
+					Admin:    platform.Admin,
+					Platform: platform,
+					Name:     placeMap[PLATFORM_COLUMN_PLACE_NAME].(string),
+					Url:      URI_RETRIEVE_ROOM_PREFIX + itoa(int(placeMap[PLATFORM_COLUMN_PLACE_ID].(float64))),
+				}
+				platform.Places = append(platform.Places, place)
 			}
-			platform.Places = append(platform.Places, place)
 		}
 	}
 }
@@ -138,4 +195,12 @@ func getPlatformSession(adminId int, platformCode string) map[string]string {
 	queryResult := dml.Execute(db.GetDb())
 
 	return convertToStringMap(decodeJson(queryResult[0][COLUMN_SESSION]))
+}
+
+func sessionToHeader(session map[string]string) string {
+	var header string
+	for key, value := range session {
+		header += key + "=" + value + "; "
+	}
+	return header
 }

@@ -37,6 +37,15 @@ func decodeJson(jsonStr string) (result map[string]interface{}) {
 	return
 }
 
+func encodeJsonStruct(data interface{}) (result string) {
+	jsonStr, err := json.Marshal(data)
+	if err != nil {
+		Error(errors.New("ERROR_ENCODE_JSON"))
+	}
+	result = string(jsonStr)
+	return
+}
+
 func decodeJsonArray(jsonStr string) (result []map[string]interface{}) {
 	err := json.Unmarshal([]byte(jsonStr), &result)
 	if err != nil {
@@ -155,4 +164,39 @@ func addDatePadding(str string) string {
 		return "0" + str
 	}
 	return str
+}
+
+func getJsonStringValuesByKey(jsonStr, key string) string {
+	result := ""
+	var bracket byte
+	openBracketCount := 0
+	hit := false
+	key = "\"" + key + "\":"
+
+	keyIndex := strings.Index(jsonStr, key) + len(key)
+
+	if keyIndex > -1 {
+		for i := keyIndex; i < len(jsonStr); i++ {
+			if !hit {
+				if jsonStr[i] == '{' || jsonStr[i] == '[' {
+					openBracketCount++
+					hit = true
+					bracket = jsonStr[i]
+				}
+			} else {
+				if jsonStr[i] == bracket {
+					openBracketCount++
+				} else if jsonStr[i] == bracket+2 {
+					openBracketCount--
+				}
+
+				if openBracketCount == 0 {
+					result = jsonStr[keyIndex : i+1]
+					break
+				}
+			}
+		}
+	}
+
+	return result
 }

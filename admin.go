@@ -17,25 +17,52 @@ func (user *Admin) Get() {
 
 	user.Id = atoi(queryResult[0][COLUMN_ID])
 	user.UserId = queryResult[0][COLUMN_USER_ID]
-	user.Password = queryResult[0][COLUMN_PASSWORD]
+	pw, err := decrypt(queryResult[0][COLUMN_PASSWORD], SECRET_SALT, SECRET_KEY)
+	if err != nil {
+		Error(err)
+	} else {
+		user.Password = pw
+	}
 }
 
 func (user *Admin) Save() {
-	dml := dbcore.NewDml()
-	dml.Insert()
-	dml.Into(SCHEMA_ADMIN)
-	dml.Value(COLUMN_USER_ID, user.UserId)
-	dml.Value(COLUMN_PASSWORD, user.Password)
-	dml.Execute(db.GetDb())
+	exists := false
 
-	dml.Clear()
-	dml.SelectColumn(COLUMN_ID)
+	dml := dbcore.NewDml()
+	dml.SelectAll()
 	dml.From(SCHEMA_ADMIN)
 	dml.Where("", COLUMN_USER_ID, dbcore.EQUAL, user.UserId)
-	dml.Where(dbcore.AND, COLUMN_PASSWORD, dbcore.EQUAL, user.Password)
-	dml.OrderBy(COLUMN_ID, dbcore.ORDER_DESC)
 	queryResult := dml.Execute(db.GetDb())
 
+	for _, row := range queryResult {
+		ePw, _ := decrypt(row[COLUMN_PASSWORD], SECRET_SALT, SECRET_KEY)
+		if row[COLUMN_USER_ID] == user.UserId && ePw == user.Password {
+			exists = true
+			user.Password = ePw
+			break
+		}
+	}
+
+	if !exists {
+		pw, err := encrypt(user.Password, SECRET_SALT, SECRET_KEY)
+		if err != nil {
+			Error(err)
+		}
+		user.Password = pw
+		dml.Clear()
+		dml.Insert()
+		dml.Into(SCHEMA_ADMIN)
+		dml.Value(COLUMN_USER_ID, user.UserId)
+		dml.Value(COLUMN_PASSWORD, user.Password)
+		dml.Execute(db.GetDb())
+
+		dml.Clear()
+		dml.SelectColumn(COLUMN_ID)
+		dml.From(SCHEMA_ADMIN)
+		dml.Where("", COLUMN_USER_ID, dbcore.EQUAL, user.UserId)
+		dml.Where(dbcore.AND, COLUMN_PASSWORD, dbcore.EQUAL, user.Password)
+		queryResult = dml.Execute(db.GetDb())
+	}
 	user.Id = atoi(queryResult[0][COLUMN_ID])
 }
 
