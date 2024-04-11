@@ -194,7 +194,12 @@ func getPlatformSession(adminId int, platformCode string) map[string]string {
 	dml.Where(dbcore.AND, COLUMN_ADMIN_ID, dbcore.EQUAL, itoa(adminId))
 	queryResult := dml.Execute(db.GetDb())
 
-	return convertToStringMap(decodeJson(queryResult[0][COLUMN_SESSION]))
+	session, err := decrypt(queryResult[0][COLUMN_SESSION], SECRET_SALT, SECRET_KEY)
+	if err != nil {
+		Error(err)
+	}
+
+	return convertToStringMap(decodeJson(session))
 }
 
 func sessionToHeader(session map[string]string) string {
