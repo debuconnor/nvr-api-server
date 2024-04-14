@@ -84,8 +84,6 @@ func (platform *Platform) Delete() {}
 
 func (platform *Platform) Update() {}
 
-func (platform *Platform) Parse(string) {}
-
 func (platform *Platform) Scrape() {}
 
 func (platform *Platform) Retrieve() {

@@ -70,8 +70,6 @@ func (room *Room) Update() {
 	dml.Execute(db.GetDb())
 }
 
-func (room *Room) Parse(string) {}
-
 func (room *Room) Scrape() {}
 
 func (room *Room) Retrieve() {}

@@ -248,8 +248,6 @@ func (reservation *Reservation) Delete() {
 
 func (reservation *Reservation) Update() {}
 
-func (reservation *Reservation) Parse(string) {}
-
 func (reservation *Reservation) Scrape() {}
 
 func (reservation *Reservation) Retrieve() {}

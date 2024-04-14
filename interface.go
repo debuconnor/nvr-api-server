@@ -1,9 +1,5 @@
 package roomapi
 
-type Parser interface {
-	Parse(string)
-}
-
 type Browser interface {
 	Scrape()
 	Retrieve()
@@ -21,5 +17,4 @@ type User Product
 
 type Website interface {
 	Product
-	Parser
 }
